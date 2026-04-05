@@ -1,4 +1,5 @@
 venv/
 __pycache__/
+*.ibt
 *.pyc
 .DS_Store
