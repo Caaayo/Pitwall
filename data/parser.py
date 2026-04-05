@@ -9,7 +9,10 @@ def load_ibt(filepath):
         "Throttle",
         "Brake",
         "Lat",
-        "Lon"
+        "Lon",
+        "LapDeltaToBestLap",
+        "LapCurrentLapTime",
+        "LapBestLapTime"
     ]
 
     ibt = irsdk.IBT()
