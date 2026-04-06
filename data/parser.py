@@ -1,61 +1,110 @@
 import irsdk
 import pandas as pd
 
-def load_ibt(filepath):
-    channels = [
-        "Lap",
-        "LapDistPct",
-        "Speed",
-        "Throttle",
-        "Brake",
-        "Lat",
-        "Lon",
-        "LapDeltaToBestLap",
-        "LapCurrentLapTime",
-        "LapBestLapTime"
-    ]
+CHANNELS = [
+    "Lap",
+    "Speed",
+    "Throttle",
+    "Brake",
+    "LapDistPct",
+    "Lat",
+    "Lon",
+    "LapDeltaToBestLap",
+    "LapCurrentLapTime",
+    "LapBestLapTime",
+    "LapLastLapTime",
+    "OnPitRoad",
+]
 
+def load_ibt(filepath):
     ibt = irsdk.IBT()
     ibt.open(filepath)
-
     data = {}
-    for channel in channels:
+    for channel in CHANNELS:
         data[channel] = ibt.get_all(channel)
-
     df = pd.DataFrame(data)
     df = df.rename(columns={"Speed": "SpeedMps"})
-
-    # Convert MPS -> KPH
     df["SpeedKph"] = df["SpeedMps"] * 3.6
-
-    # Convert MPS -> MPH
     df["SpeedMph"] = df["SpeedMps"] * 2.23694
-
     return df
 
 def get_laps(df):
-
     lap_dict = {}
-
     unique_laps = df["Lap"].unique()
-
     for lap in unique_laps:
+        if lap == 0 or lap == 1:
+            continue
+        lap_df = df[df["Lap"] == lap]
+        if lap_df["OnPitRoad"].any():
+            continue
+        lap_dict[int(lap)] = lap_df
+    return lap_dict
 
-        if lap == 0:
+def get_lap_time(df, lap_num):
+    next_lap = df[df["Lap"] == lap_num + 1]
+    if next_lap.empty:
+        return 0
+    non_zero = next_lap[next_lap["LapLastLapTime"] > 0]
+    if non_zero.empty:
+        return 0
+    return non_zero["LapLastLapTime"].iloc[0]
+
+def get_corners(lap_df, min_speed_threshold=0.85, min_distance=0.03):
+    max_speed = lap_df["SpeedMph"].max()
+    threshold = max_speed * min_speed_threshold
+    corners = []
+    last_corner_dist = -min_distance
+    in_corner = False
+    corner_start = None
+
+    for _, row in lap_df.iterrows():
+        if row["SpeedMph"] < threshold:
+            if not in_corner:
+                in_corner = True
+                corner_start = row["LapDistPct"]
+            corner_end = row["LapDistPct"]
+        else:
+            if in_corner:
+                mid = (corner_start + corner_end) / 2
+                if mid - last_corner_dist >= min_distance:
+                    corners.append((corner_start, corner_end))
+                    last_corner_dist = mid
+                in_corner = False
+
+    return corners
+
+def get_corner_summary(lap_a, lap_b, corners):
+    rows = []
+    for i, (start, end) in enumerate(corners):
+        a_corner = lap_a[(lap_a["LapDistPct"] >= start) & (lap_a["LapDistPct"] <= end)]
+        b_corner = lap_b[(lap_b["LapDistPct"] >= start) & (lap_b["LapDistPct"] <= end)]
+
+        if a_corner.empty or b_corner.empty:
             continue
 
-        lap_dict[lap] = df[df["Lap"] == lap]
+        a_min_speed = round(a_corner["SpeedMph"].min(), 1)
+        b_min_speed = round(b_corner["SpeedMph"].min(), 1)
+        speed_delta = round(b_min_speed - a_min_speed, 1)
 
-    return lap_dict
+        a_brake_start = a_corner[a_corner["Brake"] > 0.05]["LapDistPct"].min()
+        b_brake_start = b_corner[b_corner["Brake"] > 0.05]["LapDistPct"].min()
+        brake_delta = round((b_brake_start - a_brake_start) * 100, 3) if not (
+            pd.isna(a_brake_start) or pd.isna(b_brake_start)) else 0
+
+        rows.append({
+            "Corner": f"T{i+1}",
+            "Min Speed A": a_min_speed,
+            "Min Speed B": b_min_speed,
+            "Speed Δ": speed_delta,
+            "Brake Δ (%)": brake_delta,
+        })
+
+    return pd.DataFrame(rows)
 
 if __name__ == "__main__":
     df = load_ibt("./ibtfiles/test_porschegt4_sonoma.ibt")
     print(f"\ndf: {df.shape}\n")
-    print(df.head(10))
-
-    print()
-
     laps = get_laps(df)
     print(f"Number of laps: {len(laps)}")
     for lap_num, lap_df in laps.items():
-        print(f"Lap {lap_num}: {len(lap_df)} samples")
+        print(f"Lap {lap_num}: {len(lap_df)} samples — {get_lap_time(df, lap_num)}s")
